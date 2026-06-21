@@ -65,6 +65,14 @@ namespace Emby.Server.Implementations.Library
     {
         private const string ShortcutFileExtension = ".mblink";
 
+        private static readonly PreferenceKind[] _viewPreferenceKinds =
+        [
+            PreferenceKind.OrderedViews,
+            PreferenceKind.GroupedFolders,
+            PreferenceKind.MyMediaExcludes,
+            PreferenceKind.LatestItemExcludes
+        ];
+
         private readonly ILogger<LibraryManager> _logger;
         private readonly ITaskManager _taskManager;
         private readonly IUserManager _userManager;
@@ -1427,6 +1435,7 @@ namespace Emby.Server.Implementations.Library
             if (toDelete.Count > 0)
             {
                 _persistenceService.DeleteItem(toDelete.ToArray());
+                await RemoveFromUserViewPreferences(toDelete).ConfigureAwait(false);
             }
 
             ClearIgnoreRuleCache();
@@ -1436,6 +1445,33 @@ namespace Emby.Server.Implementations.Library
         public void ClearIgnoreRuleCache()
         {
             _dotIgnoreIgnoreRule.ClearDirectoryCache();
+        }
+
+        /// <summary>
+        /// Drops the given (removed) library ids from every user's view-related preferences, so a
+        /// deleted library is no longer referenced as a stale ordered view, grouped folder or exclude.
+        /// </summary>
+        private async Task RemoveFromUserViewPreferences(IReadOnlyCollection<Guid> removedIds)
+        {
+            foreach (var user in _userManager.GetUsers())
+            {
+                var changed = false;
+                foreach (var preference in _viewPreferenceKinds)
+                {
+                    var values = user.GetPreferenceValues<Guid>(preference);
+                    var filtered = values.Where(id => !removedIds.Contains(id)).ToArray();
+                    if (filtered.Length != values.Length)
+                    {
+                        user.SetPreference(preference, filtered);
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    await _userManager.UpdateUserAsync(user).ConfigureAwait(false);
+                }
+            }
         }
 
         private async Task PerformLibraryValidation(IProgress<double> progress, CancellationToken cancellationToken)
